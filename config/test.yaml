@@ -1,0 +1,18 @@
+env:
+  CUDA_VISIBLE_DEVICES: "0"
+
+args:
+  --input_a_path: "/data/dataSet/spine_test/testA"
+  --results_dir: "/data/lchun/results"
+  --checkpoints_dir: "/data/lchun/checkpoints"
+  --name: "spine_test"
+  --model: "test"
+  --input_nc: "1"
+  --output_nc: "1"
+  --preprocess: "none"
+  --no_dropout: true
+  --netG: "resnet_9blocks"
+  --norm: "instance"
+  --epoch: "37"
+  --max_dataset_size: "10"
+  --eval: false
