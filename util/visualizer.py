@@ -1,13 +1,12 @@
-import numpy as np
-import sys
 import ntpath
-import time
-from . import util, html
-from pathlib import Path
-import wandb
 import os
+import time
+from pathlib import Path
+
 import torch.distributed as dist
-from data.prj_parser import PrjImage
+import wandb
+
+from . import html, util
 from util.medical_image_io import is_nifti_path
 
 
@@ -23,6 +22,14 @@ def _extract_filenames(paths):
     return [ntpath.basename(path) for path in _to_path_list(paths)]
 
 
+def _stem_without_medical_suffix(path):
+    name = Path(path).name
+    lower_name = name.lower()
+    if lower_name.endswith(".nii.gz"):
+        return name[:-7]
+    return Path(path).stem
+
+
 def _build_path_check_message(a_paths, b_paths):
     a_names = _extract_filenames(a_paths)
     b_names = _extract_filenames(b_paths)
@@ -31,11 +38,7 @@ def _build_path_check_message(a_paths, b_paths):
     if len(a_names) != len(b_names):
         return f"path_check: batch_size_mismatch A={a_names} B={b_names}"
 
-    mismatches = []
-    for a_name, b_name in zip(a_names, b_names):
-        if a_name != b_name:
-            mismatches.append(f"{a_name}!={b_name}")
-
+    mismatches = [f"{a_name}!={b_name}" for a_name, b_name in zip(a_names, b_names) if a_name != b_name]
     if not mismatches:
         return None
 
@@ -45,188 +48,177 @@ def _build_path_check_message(a_paths, b_paths):
     return f"path_check: mismatch {preview}"
 
 
+def _saved_label_name(label):
+    label_map = {
+        "real_A": "drr",
+        "fake_B": "spine",
+    }
+    return label_map.get(label, label)
+
+
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
-    """Save images to the disk.
-
-    Parameters:
-        webpage (the HTML class) -- the HTML webpage class that stores these imaegs (see html.py for more details)
-        visuals (OrderedDict)    -- an ordered dictionary that stores (name, images (either tensor or numpy) ) pairs
-        image_path (str)         -- the string is used to create image paths
-        aspect_ratio (float)     -- the aspect ratio of saved images
-        width (int)              -- the images will be resized to width x width
-
-    This function will save images stored in 'visuals' to the HTML file specified by 'webpage'.
-    """
+    """Save model outputs to the webpage output directory."""
     image_dir = webpage.get_image_dir()
-    name = Path(image_path[0]).stem
+    source_path = image_path[0]
+    name = Path(source_path).stem
 
     webpage.add_header(name)
     ims, txts, links = [], [], []
 
-    # ==========================================
-    # 旁路截取：从原始输入文件中提取高精度物理信息头
-    original_header = None
-    if image_path[0].endswith(('.prj', '.PRJ')):
-        original_header = PrjImage().open(image_path[0], header_only=True)
-    # ==========================================
-
     for label, im_data in visuals.items():
-        if image_path[0].endswith(('.prj', '.PRJ')):
-            im = util.tensor2prj(im_data)
-            image_name = f"{name}_{label}.prj"
+        saved_label = _saved_label_name(label)
+        if is_nifti_path(source_path):
+            extension = ".nii.gz" if source_path.lower().endswith(".nii.gz") else ".nii"
+            image_name = f"{name}_{saved_label}{extension}"
             save_path = image_dir / image_name
-            util.save_image(im, save_path, aspect_ratio=aspect_ratio, raw_header_bytes=original_header)
-        elif is_nifti_path(image_path[0]):
-            im = util.tensor2medical(im_data)
-            extension = ".nii.gz" if image_path[0].lower().endswith(".nii.gz") else ".nii"
-            image_name = f"{name}_{label}{extension}"
-            save_path = image_dir / image_name
-            util.save_image(im, save_path, aspect_ratio=aspect_ratio, reference_path=image_path[0])
-        else:
-            im = util.tensor2im(im_data)
-            image_name = f"{name}_{label}.png"
-            save_path = image_dir / image_name
-            util.save_image(im, save_path, aspect_ratio=aspect_ratio)
-            ims.append(image_name)
-            txts.append(label)
-            links.append(image_name)
-            webpage.add_images(ims, txts, links, width=width)
+            util.save_image(
+                util.tensor2medical(im_data),
+                save_path,
+                aspect_ratio=aspect_ratio,
+                reference_path=source_path,
+            )
+            continue
+
+        image_name = f"{name}_{saved_label}.png"
+        save_path = image_dir / image_name
+        util.save_image(util.tensor2im(im_data), save_path, aspect_ratio=aspect_ratio)
+        ims.append(image_name)
+        txts.append(saved_label)
+        links.append(image_name)
+
+    if ims:
+        webpage.add_images(ims, txts, links, width=width)
 
 
 class Visualizer:
-    """This class includes several functions that can display/save images and print/save logging information.
-
-    It uses wandb for logging (optional) and a Python library 'dominate' (wrapped in 'HTML') for creating HTML files with images.
-    """
+    """Display, log, and save intermediate training results."""
 
     def __init__(self, opt):
-        """Initialize the Visualizer class
-
-        Parameters:
-            opt -- stores all the experiment flags; needs to be a subclass of BaseOptions
-        Step 1: Cache the training/test options
-        Step 2: Initialize wandb (if enabled)
-        Step 3: create an HTML object for saving HTML files
-        Step 4: create a logging file to store training losses
-        """
-        self.opt = opt  # cache the option
+        self.opt = opt
         self.use_html = opt.isTrain and not opt.no_html
         self.win_size = opt.display_winsize
         self.name = opt.name
+        self.experiment_dir = Path(opt.checkpoints_dir) / opt.name
         self.saved = False
         self.use_wandb = opt.use_wandb
         self.current_epoch = 0
         self.visuals_ext = getattr(opt, "visuals_ext", "png").lower()
 
-        # Initialize wandb if enabled
         if self.use_wandb:
-            # Only initialize wandb on main process (rank 0)
             if not dist.is_initialized() or dist.get_rank() == 0:
                 self.wandb_project_name = getattr(opt, "wandb_project_name", "CycleGAN-and-pix2pix")
-                self.wandb_run = wandb.init(project=self.wandb_project_name, name=opt.name, config=opt) if not wandb.run else wandb.run
+                self.wandb_run = (
+                    wandb.init(project=self.wandb_project_name, name=opt.name, config=opt)
+                    if not wandb.run
+                    else wandb.run
+                )
                 self.wandb_run._label(repo="CycleGAN-and-pix2pix")
             else:
                 self.wandb_run = None
 
-        if self.use_html:  # create an HTML object at <checkpoints_dir>/web/; images will be saved under <checkpoints_dir>/web/images/
-            self.web_dir = Path(opt.checkpoints_dir) / opt.name / "web"
-            self.img_dir = self.web_dir / "images"
-            print(f"create web directory {self.web_dir}...")
+        if self.use_html:
+            self.web_dir = self.experiment_dir
+            self.img_dir = self.experiment_dir / "Images"
+            print(f"create image directory {self.img_dir}...")
             util.mkdirs([self.web_dir, self.img_dir])
-        # create a logging file to store training losses
-        self.log_name = Path(opt.checkpoints_dir) / opt.name / "loss_log.txt"
+
+        self.log_name = self.experiment_dir / "loss_log.txt"
         with open(self.log_name, "a") as log_file:
             now = time.strftime("%c")
             log_file.write(f"================ Training Loss ({now}) ================\n")
 
     def reset(self):
-        """Reset the self.saved status"""
         self.saved = False
 
     def set_dataset_size(self, dataset_size):
-        """Set the dataset size for global step calculation"""
         self.dataset_size = dataset_size
 
     def _calculate_global_step(self, epoch, epoch_iter):
-        """Calculate global step from epoch and epoch_iter"""
-        # Assuming epoch starts from 1 and epoch_iter is cumulative within epoch
         return (epoch - 1) * self.dataset_size + epoch_iter
 
     def display_current_results(self, visuals, epoch: int, total_iters: int, save_result=False):
-        """Save current results to wandb and HTML file."""
-        # Only display results on main process (rank 0)
         if "LOCAL_RANK" in os.environ and dist.is_initialized() and dist.get_rank() != 0:
             return
 
         if self.use_wandb:
             ims_dict = {}
             for label, image in visuals.items():
-                image_numpy = util.tensor2im(image)
-                wandb_image = wandb.Image(image_numpy, caption=f"{label} - Step {total_iters}")
-                ims_dict[f"results/{label}"] = wandb_image
+                ims_dict[f"results/{label}"] = wandb.Image(
+                    util.tensor2im(image), caption=f"{label} - Step {total_iters}"
+                )
             self.wandb_run.log(ims_dict, step=total_iters)
 
-        if self.use_html and (save_result or not self.saved):  # save images to an HTML file if they haven't been saved.
+        if self.visuals_ext in {"nii", ".nii", "nii.gz", ".nii.gz"}:
+            return
+
+        if self.use_html and (save_result or not self.saved):
             self.saved = True
-            # save images to the disk
             for label, image in visuals.items():
+                saved_label = _saved_label_name(label)
                 if self.visuals_ext in {"nii", ".nii", "nii.gz", ".nii.gz"}:
                     image_numpy = util.tensor2medical(image)
                     suffix = ".nii.gz" if "gz" in self.visuals_ext else ".nii"
                 else:
                     image_numpy = util.tensor2im(image)
                     suffix = ".png"
-                img_path = self.img_dir / f"epoch{epoch:03d}_{label}{suffix}"
+                img_path = self.img_dir / f"epoch{epoch:03d}_{saved_label}{suffix}"
                 print(f"img_path: {img_path}")
                 util.save_image(image_numpy, img_path)
 
-            # update website
             if self.visuals_ext in {"nii", ".nii", "nii.gz", ".nii.gz"}:
                 return
+
             webpage = html.HTML(self.web_dir, f"Experiment name = {self.name}", refresh=1)
             for n in range(epoch, 0, -1):
                 webpage.add_header(f"epoch [{n}]")
                 ims, txts, links = [], [], []
-
-                for label, image in visuals.items():
-                    img_path = f"epoch{n:03d}_{label}.png"
+                for label in visuals.keys():
+                    saved_label = _saved_label_name(label)
+                    img_path = f"epoch{n:03d}_{saved_label}.png"
                     ims.append(img_path)
-                    txts.append(label)
+                    txts.append(saved_label)
                     links.append(img_path)
                 webpage.add_images(ims, txts, links, width=self.win_size)
             webpage.save()
 
-    def plot_current_losses(self, total_iters, losses):
-        """Log current losses to wandb
-
-        Parameters:
-            total_iters (int)     -- current training iteration during this epoch
-            losses (OrderedDict)  -- training losses stored in the format of (name, float) pairs
-        """
-        # Only plot losses on main process (rank 0)
-        if dist.is_initialized() and dist.get_rank() != 0:
+    def save_epoch_medical_results(self, visuals, epoch, a_paths=None, b_paths=None):
+        """Force-save one set of medical outputs for the current epoch."""
+        if not self.use_html:
+            return
+        if "LOCAL_RANK" in os.environ and dist.is_initialized() and dist.get_rank() != 0:
+            return
+        if self.visuals_ext not in {"nii", ".nii", "nii.gz", ".nii.gz"}:
             return
 
+        a_list = _to_path_list(a_paths)
+        b_list = _to_path_list(b_paths)
+        reference_a = a_list[0] if a_list else None
+        reference_b = b_list[0] if b_list else None
+        base_name = _stem_without_medical_suffix(reference_a or reference_b or f"epoch{epoch:03d}")
+        suffix = ".nii.gz" if "gz" in self.visuals_ext else ".nii"
+
+        for label, image in visuals.items():
+            saved_label = _saved_label_name(label)
+            if label == "real_B" and reference_b:
+                reference_path = reference_b
+            else:
+                reference_path = reference_a or reference_b
+            save_name = f"epoch{epoch:03d}_{base_name}_{saved_label}{suffix}"
+            save_path = self.img_dir / save_name
+            print(f"epoch medical save: {save_path}")
+            util.save_image(util.tensor2medical(image), save_path, reference_path=reference_path)
+
+    def plot_current_losses(self, total_iters, losses):
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
         if self.use_wandb:
             self.wandb_run.log(losses, step=total_iters)
 
     def print_current_losses(self, epoch, iters, losses, t_comp, t_data, a_paths=None, b_paths=None, aug_params=None):
-        """print current losses on console; also save the losses to the disk
-
-        Parameters:
-            epoch (int) -- current epoch
-            iters (int) -- current training iteration during this epoch (reset to 0 at the end of every epoch)
-            losses (OrderedDict) -- training losses stored in the format of (name, float) pairs
-            t_comp (float) -- computational time per data point (normalized by batch_size)
-            t_data (float) -- data loading time per data point (normalized by batch_size)
-            a_paths (str | list) -- current batch A image path(s)
-            b_paths (str | list) -- current batch B image path(s)
-            aug_params (str | list) -- augmentation summary for the current batch
-        """
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         message = f"[Rank {local_rank}] (epoch: {epoch}, iters: {iters}, time: {t_comp:.3f}, data: {t_data:.3f}) "
-        for k, v in losses.items():
-            message += f", {k}: {v:.3f}"
+        for key, value in losses.items():
+            message += f", {key}: {value:.3f}"
 
         path_check_message = _build_path_check_message(a_paths, b_paths)
         if path_check_message is not None:
@@ -236,9 +228,8 @@ class Visualizer:
         if aug_params:
             message += f", {aug_params}"
         message += "\n"
-        print(message)  # print the message on ALL ranks with rank info
+        print(message)
 
-        # Only save to log file on main process (rank 0)
         if local_rank == 0:
             with open(self.log_name, "a") as log_file:
-                log_file.write(f"{message}\n")  # save the message
+                log_file.write(f"{message}\n")

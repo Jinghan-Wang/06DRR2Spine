@@ -33,7 +33,9 @@ class BaseModel(ABC):
         """
         self.opt = opt
         self.isTrain = opt.isTrain
-        self.save_dir = Path(opt.checkpoints_dir) / opt.name  # save all the checkpoints to save_dir
+        self.experiment_dir = Path(opt.checkpoints_dir) / opt.name
+        self.save_dir = self.experiment_dir / "Models"
+        self.save_dir.mkdir(parents=True, exist_ok=True)
         self.device = opt.device
         # with [scale_width], input images might have different sizes, which hurts the performance of cudnn.benchmark.
         if opt.preprocess != "scale_width":

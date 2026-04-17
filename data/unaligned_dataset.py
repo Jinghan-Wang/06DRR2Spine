@@ -2,7 +2,6 @@ import glob
 import os
 
 from data.base_dataset import BaseDataset, get_transform
-from data.prj_parser import PrjImage
 from util.medical_image_io import collect_image_paths, is_supported_image_path, load_medical_image
 
 
@@ -20,8 +19,6 @@ class UnalignedDataset(BaseDataset):
     def __init__(self, opt):
         """Initialize this dataset class."""
         BaseDataset.__init__(self, opt)
-        self.prj_reader_A = PrjImage()
-        self.prj_reader_B = PrjImage()
 
         if opt.input_a_path or opt.input_b_path:
             if not opt.input_a_path or not opt.input_b_path:
@@ -73,8 +70,8 @@ class UnalignedDataset(BaseDataset):
         A_path = self.A_paths[index % self.A_size]
         B_path = self.B_paths[index % self.B_size]
 
-        A_img = load_medical_image(A_path, self.prj_reader_A)
-        B_img = load_medical_image(B_path, self.prj_reader_B)
+        A_img = load_medical_image(A_path)
+        B_img = load_medical_image(B_path)
 
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)

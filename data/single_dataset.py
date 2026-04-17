@@ -1,20 +1,20 @@
 import glob
 import os
 
+from PIL import Image
+
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset
-from data.prj_parser import PrjImage
 from util.medical_image_io import collect_image_paths, is_supported_image_path, load_medical_image
 
 
 class SingleDataset(BaseDataset):
-    """This dataset class can load a set of images specified by --dataroot."""
+    """Load a single input domain for inference."""
 
     def __init__(self, opt):
         """Initialize this dataset class."""
         BaseDataset.__init__(self, opt)
         self.pix2pix_variant = opt.pix2pix_variant
-        self.prj_reader = PrjImage()
         input_nc = self.opt.output_nc if self.opt.direction == "BtoA" else self.opt.input_nc
 
         if self.pix2pix_variant == "medical_s1":
@@ -50,7 +50,7 @@ class SingleDataset(BaseDataset):
         return a_paths
 
     def _read_medical_image(self, image_path):
-        return load_medical_image(image_path, self.prj_reader)
+        return load_medical_image(image_path)
 
     def __getitem__(self, index):
         """Return a data point and its metadata information."""

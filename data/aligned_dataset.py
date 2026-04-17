@@ -11,7 +11,6 @@ from torchvision.transforms import InterpolationMode
 
 from data.base_dataset import BaseDataset, get_params, get_transform
 from data.image_folder import make_dataset
-from data.prj_parser import PrjImage
 from util.medical_image_io import collect_image_paths, is_supported_image_path, load_medical_image
 
 
@@ -21,7 +20,7 @@ class AlignedDataset(BaseDataset):
     It supports two paired-data layouts:
     1. The original pix2pix layout where ``dataroot/phase`` contains AB images concatenated side by side.
     2. A medical paired layout where A/B images live in mirrored subdirectories such as
-       ``case_x/kv/*.prj`` and ``case_x/drr_spine/*.prj``.
+       ``case_x/kv/*.nii.gz`` and ``case_x/drr_spine/*.nii.gz``.
     """
 
     def __init__(self, opt):
@@ -31,8 +30,6 @@ class AlignedDataset(BaseDataset):
         self.input_nc = self.opt.output_nc if self.opt.direction == "BtoA" else self.opt.input_nc
         self.output_nc = self.opt.input_nc if self.opt.direction == "BtoA" else self.opt.output_nc
         self.pix2pix_variant = opt.pix2pix_variant
-        self.prj_reader_A = PrjImage()
-        self.prj_reader_B = PrjImage()
 
         if self.pix2pix_variant == "medical_s1":
             self.AB_paths = []
@@ -56,11 +53,10 @@ class AlignedDataset(BaseDataset):
         if not os.path.isdir(self.dir_AB):
             raise RuntimeError(f"Legacy pix2pix expects concatenated AB images under: {self.dir_AB}")
         legacy_paths = sorted(make_dataset(self.dir_AB, float("inf")))
-        legacy_paths = [path for path in legacy_paths if Path(path).suffix.lower() not in {".prj"}]
         if not legacy_paths:
             raise RuntimeError(
                 f"No legacy AB samples found under: {self.dir_AB}. "
-                "If you want paired PRJ/subdir loading, set --pix2pix_variant medical_s1."
+                "If you want paired medical loading, set --pix2pix_variant medical_s1."
             )
         return legacy_paths
 
@@ -130,8 +126,8 @@ class AlignedDataset(BaseDataset):
 
         return Path(*key_parts).as_posix().lower()
 
-    def _read_medical_image(self, image_path, reader, channels):
-        image = load_medical_image(image_path, reader)
+    def _read_medical_image(self, image_path, channels):
+        image = load_medical_image(image_path)
         if channels == 1:
             return image
         return np.repeat(image[:, :, :1], channels, axis=2)
@@ -241,8 +237,8 @@ class AlignedDataset(BaseDataset):
         if self.use_medical_pairs:
             A_path = self.A_paths[index]
             B_path = self.B_paths[index]
-            A_img = self._read_medical_image(A_path, self.prj_reader_A, self.input_nc)
-            B_img = self._read_medical_image(B_path, self.prj_reader_B, self.output_nc)
+            A_img = self._read_medical_image(A_path, self.input_nc)
+            B_img = self._read_medical_image(B_path, self.output_nc)
             A_img, B_img, aug_message = self._augment_medical_pair(A_img, B_img)
             A = self.transform_A(A_img)
             B = self.transform_B(B_img)

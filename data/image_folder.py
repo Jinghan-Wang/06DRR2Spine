@@ -29,8 +29,6 @@ IMG_EXTENSIONS = [
     ".NII",
     ".nii.gz",
     ".NII.GZ",
-    ".prj",
-    ".PRJ",
 ]
 
 

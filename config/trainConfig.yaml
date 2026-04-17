@@ -1,5 +1,5 @@
 env:
-  CUDA_VISIBLE_DEVICES: "3"
+  CUDA_VISIBLE_DEVICES: "1"
 
 args:
   --input_a_path: "/data/WJH/03_SpinalKVEnhance/06_drr2spine_project/train/drr"
@@ -13,8 +13,8 @@ args:
   --preprocess: "none"
   --visuals_ext: "nii.gz"
   --num_threads: "16"
-  --n_epochs: "100"
-  --n_epochs_decay: "100"
+  --n_epochs: "300"
+  --n_epochs_decay: "300"
   --batch_size: "1"
   --pool_size: "0"
   --print_freq: "1"

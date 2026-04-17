@@ -20,16 +20,11 @@ SUPPORTED_IMAGE_EXTENSIONS = (
     ".tiff",
     ".nii",
     ".nii.gz",
-    ".prj",
 )
 
 
 def is_nifti_path(path):
     return str(path).lower().endswith((".nii", ".nii.gz"))
-
-
-def is_prj_path(path):
-    return str(path).lower().endswith(".prj")
 
 
 def is_supported_image_path(path):
@@ -77,15 +72,7 @@ def load_nifti_image(path):
     return array[:, :, np.newaxis]
 
 
-def load_medical_image(path, prj_reader=None):
-    if is_prj_path(path):
-        if prj_reader is None:
-            raise RuntimeError("A PRJ reader is required to open .prj files.")
-        array = prj_reader.open(path)
-        if array.ndim == 2:
-            return array[:, :, np.newaxis]
-        return array
-
+def load_medical_image(path):
     if is_nifti_path(path):
         return load_nifti_image(path)
 
@@ -100,6 +87,7 @@ def save_nifti_image(image_numpy, image_path, reference_path=None):
     array = np.asarray(image_numpy, dtype=np.float32)
     if array.ndim == 3 and array.shape[2] == 1:
         array = array[:, :, 0]
+    array = np.flip(array, axis=0)
 
     affine = np.eye(4, dtype=np.float32)
     header = None
