@@ -121,12 +121,9 @@ class BaseModel(ABC):
 
     def _generator_input_multiple(self):
         """Return required spatial multiple for medical UNet inference/training."""
-        if getattr(self.opt, "pix2pix_variant", None) != "medical_s1":
-            return None
-
-        if self.opt.netG in {"unet_128", "unet_128_dualhead"}:
+        if self.opt.netG in {"unet_128", "unet_128_lite", "unet_128_dualhead", "resunet_128"}:
             return 128
-        if self.opt.netG in {"unet_256", "unet_256_dualhead"}:
+        if self.opt.netG in {"unet_256", "unet_256_lite", "unet_256_dualhead", "resunet_256"}:
             return 256
         return None
 

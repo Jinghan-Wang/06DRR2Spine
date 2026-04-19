@@ -3,7 +3,6 @@ import os
 import random
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
 import torch
 import torchvision.transforms.functional as TF
@@ -127,10 +126,7 @@ class AlignedDataset(BaseDataset):
         return Path(*key_parts).as_posix().lower()
 
     def _read_medical_image(self, image_path, channels):
-        image = load_medical_image(image_path)
-        if channels == 1:
-            return image
-        return np.repeat(image[:, :, :1], channels, axis=2)
+        return load_medical_image(image_path, channels=channels)
 
     def _should_apply_medical_augmentation(self):
         return self.opt.isTrain and self.opt.medical_aug_enable

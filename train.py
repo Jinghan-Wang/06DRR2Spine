@@ -10,7 +10,13 @@ from options.train_options import TrainOptions
 from util.util import cleanup_ddp, init_ddp
 from util.visualizer import Visualizer
 import setproctitle
-setproctitle.setproctitle("Teacher_Student")
+setproctitle.setproctitle("WJH_Student")
+
+def _unwrap_singleton(value):
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        return value[0]
+    return value
+
 
 if __name__ == "__main__":
     start_time = time.perf_counter()
@@ -40,10 +46,13 @@ if __name__ == "__main__":
     visualizer = Visualizer(opt)
     total_iters = 0
 
-    for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):
+    for epoch in range(opt.epoch_count, final_epoch + 1):
         epoch_start_time = time.time()
         iter_data_time = time.time()
         epoch_iter = 0
+        current_a_paths = None
+        current_b_paths = None
+        current_aug_params = None
         visualizer.reset()
 
         model.set_epoch(epoch)
@@ -68,15 +77,9 @@ if __name__ == "__main__":
             total_iters += opt.batch_size
             epoch_iter += opt.batch_size
 
-            current_a_paths = data.get("A_paths")
-            current_b_paths = data.get("B_paths")
-            current_aug_params = data.get("aug_params")
-            if isinstance(current_a_paths, (list, tuple)) and len(current_a_paths) == 1:
-                current_a_paths = current_a_paths[0]
-            if isinstance(current_b_paths, (list, tuple)) and len(current_b_paths) == 1:
-                current_b_paths = current_b_paths[0]
-            if isinstance(current_aug_params, (list, tuple)) and len(current_aug_params) == 1:
-                current_aug_params = current_aug_params[0]
+            current_a_paths = _unwrap_singleton(data.get("A_paths"))
+            current_b_paths = _unwrap_singleton(data.get("B_paths"))
+            current_aug_params = _unwrap_singleton(data.get("aug_params"))
 
             model.set_input(data)
             model.optimize_parameters()
@@ -84,7 +87,12 @@ if __name__ == "__main__":
             if total_iters % opt.display_freq == 0:
                 save_result = total_iters % opt.update_html_freq == 0
                 model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, total_iters, save_result)
+                visualizer.display_current_results(
+                    model.get_current_visuals(),
+                    epoch,
+                    total_iters,
+                    save_result,
+                )
 
             if total_iters % opt.print_freq == 0:
                 losses = model.get_current_losses()
@@ -108,25 +116,26 @@ if __name__ == "__main__":
 
             iter_data_time = time.time()
 
-        #if epoch_iter > 0 and epoch % 100 == 0:
         if epoch_iter > 0:
             model.compute_visuals()
             current_visuals = model.get_current_visuals()
-            print(f"[debug] epoch end reached, pid={os.getpid()}, epoch={epoch}, epoch_iter={epoch_iter}, total_iters={total_iters}")
             visualizer.display_current_results(current_visuals, epoch, total_iters, save_result=True)
-            print("[debug] display_current_results returned")
-            visualizer.save_epoch_medical_results(current_visuals, epoch, current_a_paths, current_b_paths)
+            visualizer.save_epoch_medical_results(
+                current_visuals,
+                epoch,
+                current_a_paths,
+                current_b_paths,
+            )
 
         model.update_learning_rate()
 
-        if epoch % opt.save_epoch_freq == 0 and epoch % 100 == 0:
-        #if epoch % opt.save_epoch_freq == 0:
+        if epoch % opt.save_epoch_freq == 0:
             print(f"saving the model at the end of epoch {epoch}, iters {total_iters}")
             model.save_networks("latest")
             model.save_networks(epoch)
 
         print(
-            f"End of epoch {epoch} / {opt.n_epochs + opt.n_epochs_decay} "
+            f"End of epoch {epoch} / {final_epoch} "
             f"\t Time Taken: {time.time() - epoch_start_time:.02f} sec"
         )
 

@@ -148,25 +148,16 @@ class Visualizer:
                 )
             self.wandb_run.log(ims_dict, step=total_iters)
 
-        if self.visuals_ext in {"nii", ".nii", "nii.gz", ".nii.gz"}:
-            return
-
         if self.use_html and (save_result or not self.saved):
             self.saved = True
-            for label, image in visuals.items():
-                saved_label = _saved_label_name(label)
-                if self.visuals_ext in {"nii", ".nii", "nii.gz", ".nii.gz"}:
-                    image_numpy = util.tensor2medical(image)
-                    suffix = ".nii.gz" if "gz" in self.visuals_ext else ".nii"
-                else:
-                    image_numpy = util.tensor2im(image)
-                    suffix = ".png"
-                img_path = self.img_dir / f"epoch{epoch:03d}_{saved_label}{suffix}"
-                print(f"img_path: {img_path}")
-                util.save_image(image_numpy, img_path)
-
             if self.visuals_ext in {"nii", ".nii", "nii.gz", ".nii.gz"}:
                 return
+
+            for label, image in visuals.items():
+                saved_label = _saved_label_name(label)
+                image_numpy = util.tensor2im(image)
+                img_path = self.img_dir / f"epoch{epoch:03d}_{saved_label}.png"
+                util.save_image(image_numpy, img_path)
 
             webpage = html.HTML(self.web_dir, f"Experiment name = {self.name}", refresh=1)
             for n in range(epoch, 0, -1):
@@ -205,7 +196,6 @@ class Visualizer:
                 reference_path = reference_a or reference_b
             save_name = f"epoch{epoch:03d}_{base_name}_{saved_label}{suffix}"
             save_path = self.img_dir / save_name
-            print(f"epoch medical save: {save_path}")
             util.save_image(util.tensor2medical(image), save_path, reference_path=reference_path)
 
     def plot_current_losses(self, total_iters, losses):

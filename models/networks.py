@@ -1,8 +1,9 @@
+import functools
 import torch
 import torch.nn as nn
-from torch.nn import init
-import functools
+import torch.nn.functional as F
 from torch.optim import lr_scheduler
+from torch.nn import init
 
 
 ###############################################################################
@@ -137,7 +138,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         output_nc (int) -- the number of channels in output images
         ngf (int) -- the number of filters in the last conv layer
         netG (str) -- the architecture's name: resnet_9blocks | resnet_6blocks | unet_128 | unet_256 |
-                      unet_128_dualhead | unet_256_dualhead
+                      unet_128_lite | unet_256_lite | unet_128_dualhead | unet_256_dualhead |
+                      resunet_128 | resunet_256
         norm (str) -- the name of normalization layers used in the network: batch | instance | none
         use_dropout (bool) -- if use dropout layers.
         init_type (str)    -- the name of our initialization method.
@@ -156,10 +158,18 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif netG == "unet_128_lite":
+        net = LiteUnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer)
+    elif netG == "unet_256_lite":
+        net = LiteUnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer)
     elif netG == "unet_128_dualhead":
         net = DualHeadUnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256_dualhead":
         net = DualHeadUnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif netG == "resunet_128":
+        net = ResUnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, num_downs=7)
+    elif netG == "resunet_256":
+        net = ResUnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, num_downs=8)
     else:
         raise NotImplementedError("Generator model name [%s] is not recognized" % netG)
     return net
@@ -469,6 +479,267 @@ class UnetGenerator(nn.Module):
     def forward(self, input):
         """Standard forward"""
         return self.model(input)
+
+
+class LiteUnetGenerator(nn.Module):
+    """A moderately regularized U-Net that keeps more detail than the strict lite variant."""
+
+    def __init__(self, input_nc, output_nc, num_downs, ngf=48, norm_layer=nn.BatchNorm2d):
+        super(LiteUnetGenerator, self).__init__()
+        lite_ngf = max(16, ngf)
+        max_channels = lite_ngf * 8
+
+        unet_block = LiteUnetSkipConnectionBlock(
+            outer_nc=max_channels,
+            inner_nc=max_channels,
+            input_nc=None,
+            submodule=None,
+            innermost=True,
+            norm_layer=norm_layer,
+            skip_scale=0.7,
+        )
+        for _ in range(num_downs - 5):
+            unet_block = LiteUnetSkipConnectionBlock(
+                outer_nc=max_channels,
+                inner_nc=max_channels,
+                input_nc=None,
+                submodule=unet_block,
+                norm_layer=norm_layer,
+                use_dropout=False,
+                dropout_p=0.0,
+                skip_scale=0.7,
+            )
+
+        unet_block = LiteUnetSkipConnectionBlock(
+            outer_nc=lite_ngf * 4,
+            inner_nc=max_channels,
+            input_nc=None,
+            submodule=unet_block,
+            norm_layer=norm_layer,
+            skip_scale=0.85,
+        )
+        unet_block = LiteUnetSkipConnectionBlock(
+            outer_nc=lite_ngf * 2,
+            inner_nc=lite_ngf * 4,
+            input_nc=None,
+            submodule=unet_block,
+            norm_layer=norm_layer,
+            skip_scale=1.0,
+        )
+        unet_block = LiteUnetSkipConnectionBlock(
+            outer_nc=lite_ngf,
+            inner_nc=lite_ngf * 2,
+            input_nc=None,
+            submodule=unet_block,
+            norm_layer=norm_layer,
+            skip_scale=1.0,
+        )
+        self.model = LiteUnetSkipConnectionBlock(
+            outer_nc=output_nc,
+            inner_nc=lite_ngf,
+            input_nc=input_nc,
+            submodule=unet_block,
+            outermost=True,
+            norm_layer=norm_layer,
+            skip_scale=1.0,
+        )
+
+    def forward(self, input):
+        return self.model(input)
+
+
+class LiteUnetSkipConnectionBlock(nn.Module):
+    """A U-Net block with reduced-capacity skips."""
+
+    def __init__(
+        self,
+        outer_nc,
+        inner_nc,
+        input_nc=None,
+        submodule=None,
+        outermost=False,
+        innermost=False,
+        norm_layer=nn.BatchNorm2d,
+        use_dropout=False,
+        dropout_p=0.2,
+        skip_scale=1.0,
+    ):
+        super(LiteUnetSkipConnectionBlock, self).__init__()
+        self.outermost = outermost
+        self.skip_scale = skip_scale
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+        if input_nc is None:
+            input_nc = outer_nc
+
+        downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
+        downrelu = nn.LeakyReLU(0.2, True)
+        downnorm = norm_layer(inner_nc)
+        uprelu = nn.ReLU(True)
+        upnorm = norm_layer(outer_nc)
+
+        if outermost:
+            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc, kernel_size=4, stride=2, padding=1)
+            down = [downconv]
+            up = [uprelu, upconv, nn.Tanh()]
+            model = down + [submodule] + up
+        elif innermost:
+            upconv = nn.ConvTranspose2d(inner_nc, outer_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
+            down = [downrelu, downconv]
+            up = [uprelu, upconv, upnorm]
+            model = down + up
+        else:
+            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
+            down = [downrelu, downconv, downnorm]
+            up = [uprelu, upconv, upnorm]
+            model = down + [submodule] + up
+            if use_dropout:
+                model.append(nn.Dropout(dropout_p))
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        if self.outermost:
+            return self.model(x)
+        return torch.cat([x * self.skip_scale, self.model(x)], 1)
+
+
+class ResidualConvBlock(nn.Module):
+    """Residual convolution block used by ResUNet."""
+
+    def __init__(self, input_nc, output_nc, norm_layer, stride=1, use_dropout=False):
+        super(ResidualConvBlock, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        layers = [
+            nn.Conv2d(input_nc, output_nc, kernel_size=3, stride=stride, padding=1, bias=use_bias),
+            norm_layer(output_nc),
+            nn.ReLU(True),
+        ]
+        if use_dropout:
+            layers.append(nn.Dropout(0.5))
+        layers.extend(
+            [
+                nn.Conv2d(output_nc, output_nc, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                norm_layer(output_nc),
+            ]
+        )
+        self.main = nn.Sequential(*layers)
+
+        if stride != 1 or input_nc != output_nc:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(input_nc, output_nc, kernel_size=1, stride=stride, padding=0, bias=use_bias),
+                norm_layer(output_nc),
+            )
+        else:
+            self.shortcut = Identity()
+
+        self.relu = nn.ReLU(True)
+
+    def forward(self, x):
+        return self.relu(self.main(x) + self.shortcut(x))
+
+
+class ResUnetGenerator(nn.Module):
+    """Residual U-Net generator with skip connections and residual blocks."""
+
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, num_downs=8):
+        super(ResUnetGenerator, self).__init__()
+        if num_downs < 5:
+            raise ValueError(f"ResUnetGenerator expects num_downs >= 5, got {num_downs}")
+
+        encoder_channels = [ngf, ngf * 2, ngf * 4]
+        while len(encoder_channels) < num_downs:
+            encoder_channels.append(min(ngf * 8, encoder_channels[-1] * 2))
+
+        self.stem = ResidualConvBlock(input_nc, encoder_channels[0], norm_layer=norm_layer, stride=1)
+        self.down_blocks = nn.ModuleList()
+        in_channels = encoder_channels[0]
+        deepest_start = max(0, len(encoder_channels) - 2)
+        for index, out_channels in enumerate(encoder_channels[1:], start=1):
+            block_dropout = use_dropout and index >= deepest_start
+            self.down_blocks.append(
+                ResidualConvBlock(
+                    in_channels,
+                    out_channels,
+                    norm_layer=norm_layer,
+                    stride=2,
+                    use_dropout=block_dropout,
+                )
+            )
+            in_channels = out_channels
+
+        self.bottleneck = ResidualConvBlock(
+            in_channels,
+            in_channels,
+            norm_layer=norm_layer,
+            stride=2,
+            use_dropout=use_dropout,
+        )
+
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        self.up_samples = nn.ModuleList()
+        self.up_blocks = nn.ModuleList()
+        current_channels = in_channels
+        for skip_channels in reversed(encoder_channels):
+            self.up_samples.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(
+                        current_channels,
+                        skip_channels,
+                        kernel_size=4,
+                        stride=2,
+                        padding=1,
+                        bias=use_bias,
+                    ),
+                    norm_layer(skip_channels),
+                    nn.ReLU(True),
+                )
+            )
+            self.up_blocks.append(
+                ResidualConvBlock(
+                    skip_channels * 2,
+                    skip_channels,
+                    norm_layer=norm_layer,
+                    stride=1,
+                    use_dropout=use_dropout and skip_channels >= ngf * 8,
+                )
+            )
+            current_channels = skip_channels
+
+        self.head = nn.Sequential(
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(current_channels, output_nc, kernel_size=7, padding=0),
+            nn.Tanh(),
+        )
+
+    def forward(self, input):
+        skips = []
+        x = self.stem(input)
+        skips.append(x)
+        for block in self.down_blocks:
+            x = block(x)
+            skips.append(x)
+
+        x = self.bottleneck(x)
+
+        for upsample, upblock, skip in zip(self.up_samples, self.up_blocks, reversed(skips)):
+            x = upsample(x)
+            if x.shape[-2:] != skip.shape[-2:]:
+                x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
+            x = torch.cat([x, skip], dim=1)
+            x = upblock(x)
+
+        return self.head(x)
 
 
 class DualHeadUnetGenerator(nn.Module):

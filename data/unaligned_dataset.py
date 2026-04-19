@@ -60,18 +60,18 @@ class UnalignedDataset(BaseDataset):
             )
 
         btoA = self.opt.direction == "BtoA"
-        input_nc = self.opt.output_nc if btoA else self.opt.input_nc
-        output_nc = self.opt.input_nc if btoA else self.opt.output_nc
-        self.transform_A = get_transform(self.opt, grayscale=(input_nc == 1), is_medical=True)
-        self.transform_B = get_transform(self.opt, grayscale=(output_nc == 1), is_medical=True)
+        self.input_nc = self.opt.output_nc if btoA else self.opt.input_nc
+        self.output_nc = self.opt.input_nc if btoA else self.opt.output_nc
+        self.transform_A = get_transform(self.opt, grayscale=(self.input_nc == 1), is_medical=True)
+        self.transform_B = get_transform(self.opt, grayscale=(self.output_nc == 1), is_medical=True)
 
     def __getitem__(self, index):
         """Return a data point and its metadata information."""
         A_path = self.A_paths[index % self.A_size]
         B_path = self.B_paths[index % self.B_size]
 
-        A_img = load_medical_image(A_path)
-        B_img = load_medical_image(B_path)
+        A_img = load_medical_image(A_path, channels=self.input_nc)
+        B_img = load_medical_image(B_path, channels=self.output_nc)
 
         A = self.transform_A(A_img)
         B = self.transform_B(B_img)

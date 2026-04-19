@@ -55,7 +55,18 @@ def _require_nibabel():
         raise ImportError("nibabel is required for .nii/.nii.gz support. Install it with `pip install nibabel`.")
 
 
-def load_nifti_image(path):
+def _normalize_to_unit_range(array):
+    array = np.asarray(array, dtype=np.float32)
+    min_value = float(array.min())
+    max_value = float(array.max())
+    if max_value > min_value:
+        array = (array - min_value) / (max_value - min_value)
+    else:
+        array = np.zeros_like(array, dtype=np.float32)
+    return np.clip(array, 0.0, 1.0)
+
+
+def _load_nifti_array(path):
     _require_nibabel()
     nifti = nib.load(str(path))
     array = np.asarray(nifti.get_fdata(dtype=np.float32))
@@ -64,21 +75,38 @@ def load_nifti_image(path):
         raise RuntimeError(f"Expected a 2D NIfTI image after squeeze, got shape {array.shape} from {path}")
 
     array = np.nan_to_num(array, copy=False)
-    min_value = float(array.min())
-    max_value = float(array.max())
-    if max_value > min_value and (min_value < 0.0 or max_value > 1.0):
-        array = (array - min_value) / (max_value - min_value)
-    array = np.clip(array, 0.0, 1.0)
-    return array[:, :, np.newaxis]
+    return array.astype(np.float32, copy=False)
 
 
-def load_medical_image(path):
+def _build_threshold_channel(array, lower_bound):
+    upper_bound = float(array.max())
+    if upper_bound <= lower_bound:
+        return np.zeros_like(array, dtype=np.float32)
+    clipped = np.clip(array, lower_bound, upper_bound)
+    return _normalize_to_unit_range(clipped)
+
+
+def load_nifti_image(path, channels=1):
+    array = _load_nifti_array(path)
+    if channels == 4:
+        channels_list = [_normalize_to_unit_range(array)]
+        for lower_bound in (500.0, 1000.0, 1500.0):
+            channels_list.append(_build_threshold_channel(array, lower_bound))
+        return np.stack(channels_list, axis=2)
+
+    return _normalize_to_unit_range(array)[:, :, np.newaxis]
+
+
+def load_medical_image(path, channels=1):
     if is_nifti_path(path):
-        return load_nifti_image(path)
+        return load_nifti_image(path, channels=channels)
 
     image = Image.open(path).convert("L")
     array = np.asarray(image, dtype=np.float32) / 255.0
-    return array[:, :, np.newaxis]
+    array = np.clip(array, 0.0, 1.0)
+    if channels == 1:
+        return array[:, :, np.newaxis]
+    return np.repeat(array[:, :, np.newaxis], channels, axis=2)
 
 
 def save_nifti_image(image_numpy, image_path, reference_path=None):
